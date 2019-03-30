@@ -1,10 +1,10 @@
-def read_sv_configuration(key, conn):
+def read_sv_configuration(conn, key, default=''):
     with conn.cursor() as cursor:
         cursor.execute(
             'select value from sv_configuration where key = %s', (key,))
         value = cursor.fetchone()
         if value == None:
-            return ''
+            return default
         else:
             return value[0]
 

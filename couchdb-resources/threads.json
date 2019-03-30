@@ -1,11 +1,8 @@
 {
     "_id": "_design/threads",
     "views": {
-        "unread_subreddit": {
-            "map": " function(doc) {\n     if (doc['stevia_type'] == 'thread' && !(doc.stevia_downloaded && doc.stevia_downloaded == 'true')  ) {\n        emit(doc.subreddit, {\n          _id: doc._id,\n          title: doc.title,\n          fullname: doc.fullname\n        });\n     }\n }"
-        },
         "unread_subreddit_time": {
-            "map": " function(doc) {\n     if (doc['stevia_type'] == 'thread' && !(doc.stevia_downloaded && doc.stevia_downloaded == 'true')  ) {\n        emit([doc.subreddit, doc.created_utc], {\n          _id: doc._id,\n          title: doc.title,\n          fullname: doc.fullname\n        });\n     }\n }"
+            "map": " function(doc) {\n     if (doc['sv_type'] == 'reddit_thread' && !(doc['sv_downloaded'] == 'true')  ) {\n        emit([doc.sv_subreddit_name, doc.created_utc], {\n          reddit_id: doc.reddit_id\n        });\n     }\n }"
         }
     },
     "language": "javascript"
