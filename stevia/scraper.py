@@ -41,7 +41,7 @@ def sv_format_thread(subreddit_name, submission):
     return thread, couch_id
 
 
-def sv_read_all_threads_list(storage, subreddit, subreddit_name, watermark_t3, limit, max, sleep_time):
+def sv_read_threads(storage, subreddit, subreddit_name, watermark_t3, limit, max_num, sleep_time):
     # batch values
     last_t3 = ''
     top_t3 = ''
@@ -75,14 +75,16 @@ def sv_read_all_threads_list(storage, subreddit, subreddit_name, watermark_t3, l
             if sv_utils.is_blank(top_t3):
                 top_t3 = submission.fullname
 
-            if max > 0 and current >= max:
+            if max_num > 0 and current >= max_num:
                 complete = True
                 # TODO better logging
                 print("*** will exit for max number reached ***")
+                break
             elif submission.fullname == watermark_t3:
                 complete = True
                 # TODO better logging
-                print("*** reached last time limit, will not write ***")
+                print(
+                    "*** reached watermark_t3, will exit and will not write this post ***")
                 break
 
             last_t3 = submission.fullname
@@ -124,21 +126,10 @@ def sv_read_all_threads_list(storage, subreddit, subreddit_name, watermark_t3, l
     print("")
     print("***")
     print(watermark_t3, top_t3)
-    return top_t3
+    return top_t3, current
 
 
-def read_latest_threads(conn, reddit, storage):
-    # TODO loop on job definitions
-    subreddit_name, watermark_t3 = sv_sql.read_sv_first_job(conn)
-
-    if subreddit_name == None:
-        # TODO better logging
-        print("*** no job defined, skipping threads reading ***")
-        return
-
-    # TODO better logging
-    print("*** working on: ", subreddit_name, watermark_t3)
-
+def get_configured_values(conn, watermark_t3, max_num):
     sleep_time = int(sv_sql.read_sv_configuration(
         conn, 'STEVIA_SLEEP_TIME', 2))
     limit = int(sv_sql.read_sv_configuration(conn, 'REDDIT_RATE_LIMIT', 100))
@@ -146,24 +137,63 @@ def read_latest_threads(conn, reddit, storage):
     print("scraper sleep time:", sleep_time)
     print("reddit limit: ", limit)
 
-    # TODO read from job definition?
-    max = 0
     couch_boom = sv_utils.str_2_bool(
         sv_sql.read_sv_configuration(conn, 'DEBUG_COUCH_DB_WRITE', 'false'))
     if couch_boom:
         print(
             "DEBUG_COUCH_DB_WRITE is true, limiting access to the current job to the first record")
-        max = int(sv_sql.read_sv_configuration(
+        max_num = int(sv_sql.read_sv_configuration(
             conn, 'DEBUG_COUCH_DB_THREADS', '1'))
-        limit = max
+        limit = max_num
         watermark_t3 = ''
+
+    return sleep_time, limit, max_num, couch_boom, watermark_t3
+
+
+def read_corpus_threads(conn, reddit, storage):
+    threads = sv_sql.read_sv_active_corpus_jobs(conn)
+    for thread in threads:
+        read_corpus_threads_2(conn, reddit, storage,
+                              thread[0], thread[1], thread[2])
+
+
+def read_corpus_threads_2(conn, reddit, storage, subreddit_name, watermark_t3, max_num):
+    # TODO better logging
+    print("*** working on: ", subreddit_name, "watermark",
+          watermark_t3, "for threads", max_num)
+
+    sleep_time, limit, max_num, couch_boom, watermark_t3 = get_configured_values(
+        conn, watermark_t3, max_num)
 
     subreddit = reddit.subreddit(subreddit_name)
 
-    print(reddit.auth.limits)
+    top_t3, read_threads = sv_read_threads(
+        storage, subreddit, subreddit_name, watermark_t3, limit, max_num, sleep_time)
 
-    top_t3 = sv_read_all_threads_list(
-        storage, subreddit, subreddit_name, watermark_t3, limit, max, sleep_time)
+    if not couch_boom and sv_utils.is_not_blank(top_t3):
+        sv_sql.write_sv_threads(subreddit_name, top_t3, read_threads, conn)
+    else:
+        print("not storing t3 because couch_boom ",
+              couch_boom, " or blank t3 (", top_t3, ")")
+
+
+def read_latest_threads(conn, reddit, storage):
+    results = sv_sql.read_sv_jobs(conn, 'online')
+    for result in results:
+        read_latest_threads_2(conn, reddit, storage, result[0], result[1])
+
+
+def read_latest_threads_2(conn, reddit, storage, subreddit_name, watermark_t3):
+    # TODO better logging
+    print("*** working on: ", subreddit_name, watermark_t3)
+
+    sleep_time, limit, max_num, couch_boom, watermark_t3 = get_configured_values(
+        conn, watermark_t3, 0)
+
+    subreddit = reddit.subreddit(subreddit_name)
+
+    top_t3, _ = sv_read_threads(
+        storage, subreddit, subreddit_name, watermark_t3, limit, max_num, sleep_time)
 
     if not couch_boom and sv_utils.is_not_blank(top_t3):
         sv_sql.write_sv_watermark(subreddit_name, top_t3, conn)
@@ -172,45 +202,65 @@ def read_latest_threads(conn, reddit, storage):
               couch_boom, " or blank t3 (", top_t3, ")")
 
 
+def read_corpus_posts(conn, reddit, storage):
+    results = sv_sql.read_sv_jobs(conn, 'corpus')
+    for result in results:
+        read_corpus_posts_2(conn, reddit, storage, result[0])
+
+
+def read_corpus_posts_2(conn, reddit, storage, subreddit_name):
+    print("Now read all unread comments in", subreddit_name)
+
+    for y in storage.view('threads/unread_subreddit', key=subreddit_name):
+        read_posts_from_thread(reddit, storage, subreddit_name, y)
+
+
 def read_old_posts(conn, reddit, storage):
-    # TODO loop on job definitions
-    subreddit_name, _ = sv_sql.read_sv_first_job(conn)
+    results = sv_sql.read_sv_jobs(conn, 'online')
+    for result in results:
+        read_old_posts_2(conn, reddit, storage, result[0])
 
-    print("Now read all comments older than one week...")
 
-    block_me = False
+def read_old_posts_2(conn, reddit, storage, subreddit_name):
+    print("Now read all comments older than one week for", subreddit_name)
+
     doc_start = 0
     week_before = int(
         datetime.datetime.utcnow().timestamp() - 60 * 60 * 24 * 7)
     for y in storage.view('threads/unread_subreddit_time')[[subreddit_name, doc_start]:[subreddit_name, week_before]]:
-        time.sleep(2)
+        read_posts_from_thread(reddit, storage, subreddit_name, y)
 
-        reddit_id = y.value['id']
-        sv_submission = storage[y.id]
 
-        submission = reddit.submission(id=reddit_id)
-        submission.comments.replace_more(limit=None)
+def read_posts_from_thread(reddit, storage, subreddit_name, y):
+    time.sleep(2)
 
-        print("the thread")
-        # pprint(sv_submission)
-        print(reddit_id)
+    reddit_id = y.value['id']
+    sv_submission = storage[y.id]
 
-        for comment in submission.comments.list():
-            print("*a post*")
-            post, _ = sv_format_comment(
-                subreddit_name, sv_submission, comment)
-            # pprint(post)
-            print(post["id"])
-            storage.save(post)
-            # print(comment.fullname)
-            # print(comment.body)
+    submission = reddit.submission(id=reddit_id)
+    submission.comments.replace_more(limit=None)
 
-        print("submission downloaded")
-        sv_submission['sv_downloaded'] = 'true'
-        storage.save(sv_submission)
+    block_me = False
+    print("the thread")
+    # pprint(sv_submission)
+    print(reddit_id)
 
-        if block_me:
-            print("early exit")
-            quit()
-        # print(y.value)
-        # print(submission)
+    for comment in submission.comments.list():
+        print("*a post*")
+        post, _ = sv_format_comment(
+            subreddit_name, sv_submission, comment)
+        # pprint(post)
+        print(post["id"])
+        storage.save(post)
+        # print(comment.fullname)
+        # print(comment.body)
+
+    print("submission downloaded")
+    sv_submission['sv_downloaded'] = 'true'
+    storage.save(sv_submission)
+
+    if block_me:
+        print("early exit")
+        quit()
+    # print(y.value)
+    # print(submission)

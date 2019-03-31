@@ -23,6 +23,9 @@ def main():
 
     sv_scraper.read_latest_threads(conn, reddit, storage)
     sv_scraper.read_old_posts(conn, reddit, storage)
+    sv_scraper.read_corpus_threads(conn, reddit, storage)
+    sv_scraper.read_corpus_posts(conn, reddit, storage)
+
     print("That's all folks!")
 
 
